@@ -515,7 +515,55 @@ I hope it's easier to tell what the heck this proc is even doing, unlike previou
 	SEND_SIGNAL(new_human, COMSIG_POST_SPAWN_UPDATE)
 	SSround_recording.recorder.track_player(new_human)
 
-//This proc is a bit of a misnomer, since there's no actual randomization going on.
+/**
+* Get all squads to which a player can be assigned to.
+* Return a multidimensional alist in which squads are grouped by the number of people
+* with the same job. If the human no job, then by the total count.
+* This list is ordered from low to high.
+* The first list, for count 0 is special because the front of it contains
+* the player's preferred squads. There are multiple because in addition to
+* the one preferred squad a player can choose in settings, there could also be
+* it's equiavalents in other factions.
+*/
+/datum/authority/branch/role/proc/get_squads_for_assignment(mob/living/carbon/human/human)
+	if(!length(squads))
+		to_world("Warning, something messed up in get_squads_for_assignment(). No squads set up!")
+		return null
+	var/job
+	if(human.job != "Reinforcements")
+		job = GET_DEFAULT_ROLE(human.job)
+	var/datum/pref_squad_name
+	if(human && human.client && human.client.prefs.preferred_squad && human.client.prefs.preferred_squad != "None")
+		pref_squad_name = human.client.prefs.preferred_squad
+	var/list/random_squads = shuffle(squads.Copy())
+	var/list/squads_for_assignment = list()
+	var/list/preferred_squads = list()
+	for(var/datum/squad/squad in random_squads)
+		var/count
+		if(job)
+			count = num2text(squad.roles_in[job])
+		else
+			count = num2text(squad.count)
+		if (squad.roundstart && squad.usable && squad.faction == human.faction && squad.name != "Root")
+			if(pref_squad_name && squad.name == pref_squad_name)
+				preferred_squads += squad
+			else if(pref_squad_name && squad.equivalent_name == pref_squad_name)
+				preferred_squads += squad
+			else if(istype(squads_for_assignment[count], /list))
+				squads_for_assignment[count] += squad
+			else
+				squads_for_assignment[count] = list(squad)
+	squads_for_assignment["0"] = preferred_squads + squads_for_assignment["0"]
+	// It's miracle that sorting an assoc list by numbers as strings works
+	sortAssocKeepList(squads_for_assignment)
+	return squads_for_assignment
+
+/**
+* Assign a human to one of his preferred squads, if possible. If not, assign him to one
+* of the squads with the lowest number of people with the same job. While a marine can have
+* a single preferred squad, other factions could have equivalents to it, which are also
+* treated the same as the marine squad.
+*/
 /datum/authority/branch/role/proc/randomize_squad(mob/living/carbon/human/human, skip_limit = FALSE)
 	if(!human)
 		return
@@ -536,45 +584,18 @@ I hope it's easier to tell what the heck this proc is even doing, unlike previou
 		intel_squad.put_marine_in_squad(human)
 		return
 
-	var/slot_check
+	var/job
 	if(human.job != "Reinforcements")
-		slot_check = GET_DEFAULT_ROLE(human.job)
+		job = GET_DEFAULT_ROLE(human.job)
 
-	//we make a list of squad that is randomized so alpha isn't always lowest squad.
-	var/list/mixed_squads = list()
-	for(var/datum/squad/squad in squads)
-		if(squad.roundstart && squad.usable && squad.faction == human.faction && squad.name != "Root")
-			mixed_squads += squad
-
-	var/preferred_squad
-	if(human?.client?.prefs?.preferred_squad)
-		preferred_squad = human.client.prefs.preferred_squad
-
-	var/datum/squad/lowest
-	for(var/datum/squad/squad in mixed_squads)
-		if(slot_check && !isnull(squad.roles_cap[slot_check]) && !skip_limit)
-			if(squad.roles_in[slot_check] >= squad.roles_cap[slot_check])
-				continue
-
-		if(preferred_squad == "None")
-			if(squad.put_marine_in_squad(human))
+	var/list/squads_for_assignment = get_squads_for_assignment(human)
+	for(var/count in squads_for_assignment)
+		for(var/datum/squad/squad in squads_for_assignment[count])
+			if(!skip_limit && job && !isnull(squad.roles_cap[job]) && squad.roles_in[job] < squad.roles_cap[job])
+				squad.put_marine_in_squad(human)
 				return
+	to_world("Warning! Some human was not assigned in randomize_squad()!")
 
-		else if(squad.name == preferred_squad || squad.equivalent_name == preferred_squad) //fav squad or faction equivalent has a spot for us, no more searching needed.
-			if(squad.put_marine_in_squad(human))
-				return
-
-		if(!lowest)
-			lowest = squad
-
-		else if(slot_check)
-			if(squad.roles_in[slot_check] < lowest.roles_in[slot_check])
-				lowest = squad
-
-	if(!lowest || !lowest.put_marine_in_squad(human))
-		to_world("Warning! Bug in get_random_squad()!")
-		return
-	return
 
 /datum/authority/branch/role/proc/get_caste_by_text(name)
 	var/mob/living/carbon/xenomorph/M
